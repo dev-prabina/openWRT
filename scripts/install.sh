@@ -9,6 +9,8 @@ REPO_BRANCH="main"
 ALT_BRANCH="master"
 GITHUB_RAW="https://raw.githubusercontent.com/$REPO_USER/$REPO_NAME"
 GITHUB_ARCHIVE="https://github.com/$REPO_USER/$REPO_NAME/archive/refs/heads"
+ARGON_IPK_URL="https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.3.1/luci-theme-argon_2.3.1_all.ipk"
+ARGON_CFG_IPK_URL="https://github.com/jerrykuku/luci-app-argon-config/releases/download/v0.9/luci-app-argon-config_0.9_all.ipk"
 
 echo "================================================================="
 echo "  👑 Installing Queen Management Suite & Argon Theme on OpenWrt  "
@@ -39,12 +41,52 @@ if command -v apk >/dev/null 2>&1; then
 elif command -v opkg >/dev/null 2>&1; then
     echo "  -> Detected OpenWrt 24.x (opkg). Updating & installing..."
     opkg update >/dev/null 2>&1 || true
-    opkg install ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus iwinfo mwan3 luci-theme-argon luci-app-argon-config curl wget tar ca-certificates >/dev/null 2>&1 || true
+    opkg install ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus iwinfo mwan3 curl wget tar ca-certificates >/dev/null 2>&1 || true
+    
+    # Try opkg install for argon theme
+    if ! opkg install luci-theme-argon luci-app-argon-config >/dev/null 2>&1; then
+        echo "  -> Argon theme not in default opkg feed. Installing from official release..."
+        TEMP_PKG_DIR="/tmp/queen_packages_$$"
+        mkdir -p "$TEMP_PKG_DIR"
+        
+        # 1. Check if bundled in local source
+        LOCAL_ARGON_IPK=""
+        LOCAL_ARGON_CFG=""
+        if [ -f "$(pwd)/packages/luci-theme-argon_2.3.1_all.ipk" ]; then
+            LOCAL_ARGON_IPK="$(pwd)/packages/luci-theme-argon_2.3.1_all.ipk"
+            LOCAL_ARGON_CFG="$(pwd)/packages/luci-app-argon-config_0.9_all.ipk"
+        elif [ -f "$(dirname "$0")/../packages/luci-theme-argon_2.3.1_all.ipk" ]; then
+            LOCAL_ARGON_IPK="$(dirname "$0")/../packages/luci-theme-argon_2.3.1_all.ipk"
+            LOCAL_ARGON_CFG="$(dirname "$0")/../packages/luci-app-argon-config_0.9_all.ipk"
+        fi
+
+        if [ -n "$LOCAL_ARGON_IPK" ] && [ -f "$LOCAL_ARGON_IPK" ]; then
+            echo "  -> Installing bundled Argon ipk packages..."
+            opkg install "$LOCAL_ARGON_IPK" "$LOCAL_ARGON_CFG" >/dev/null 2>&1 || true
+        else
+            echo "  -> Downloading Argon theme release packages..."
+            download_file "$ARGON_IPK_URL" "$TEMP_PKG_DIR/argon.ipk" || \
+            download_file "$GITHUB_RAW/$REPO_BRANCH/packages/luci-theme-argon_2.3.1_all.ipk" "$TEMP_PKG_DIR/argon.ipk" || true
+
+            download_file "$ARGON_CFG_IPK_URL" "$TEMP_PKG_DIR/argon_cfg.ipk" || \
+            download_file "$GITHUB_RAW/$REPO_BRANCH/packages/luci-app-argon-config_0.9_all.ipk" "$TEMP_PKG_DIR/argon_cfg.ipk" || true
+
+            if [ -s "$TEMP_PKG_DIR/argon.ipk" ]; then
+                opkg install "$TEMP_PKG_DIR/argon.ipk" >/dev/null 2>&1 || true
+            fi
+            if [ -s "$TEMP_PKG_DIR/argon_cfg.ipk" ]; then
+                opkg install "$TEMP_PKG_DIR/argon_cfg.ipk" >/dev/null 2>&1 || true
+            fi
+        fi
+        rm -rf "$TEMP_PKG_DIR"
+    fi
 fi
 
-# Step 2: Configure Custom Argon Theme
-echo "[2/7] Applying tailored Queen Argon theme configuration..."
-uci -q batch <<EOF
+# Step 2: Configure Theme (Fail-Safe Verification)
+echo "[2/7] Checking & configuring LuCI theme..."
+if [ -d "/www/luci-static/argon" ] && [ -f "/www/luci-static/argon/cascade.css" ]; then
+    echo "  -> Argon theme confirmed available. Applying tailored Queen configuration..."
+    uci -q batch <<EOF
 set luci.main.mediaurlbase='/luci-static/argon'
 set argon.@global[0]=global
 set argon.@global[0].primary='#0F766E'
@@ -58,6 +100,19 @@ set argon.@global[0].online_wallpaper='bing'
 commit argon
 commit luci
 EOF
+else
+    echo "  -> Argon theme files not present. Preserving safe default theme..."
+    CURRENT_THEME="$(uci -q get luci.main.mediaurlbase || true)"
+    if [ "$CURRENT_THEME" = "/luci-static/argon" ] || [ -z "$CURRENT_THEME" ]; then
+        if [ -d "/www/luci-static/bootstrap" ]; then
+            uci set luci.main.mediaurlbase='/luci-static/bootstrap'
+            uci commit luci
+        elif [ -d "/www/luci-static/material" ]; then
+            uci set luci.main.mediaurlbase='/luci-static/material'
+            uci commit luci
+        fi
+    fi
+fi
 
 # Step 3: Create Destination Directories
 echo "[3/7] Creating system directories..."
