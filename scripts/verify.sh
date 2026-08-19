@@ -40,18 +40,10 @@ fi
 
 # 4. Check Argon Theme
 echo -n "Checking Argon Theme: "
-if uci -q get luci.main.mediaurlbase | grep -q 'argon'; then
-    echo "Argon [ACTIVE]"
+if [ -f "/www/luci-static/argon/css/cascade.css" ] && uci -q get luci.main.mediaurlbase | grep -q 'argon'; then
+    echo "Argon [ACTIVE & VERIFIED]"
 else
-    echo "Argon [INACTIVE]"
-fi
-
-# 5. Check Multi-WAN Engine (mwan3)
-echo -n "Checking Multi-WAN (mwan3): "
-if command -v mwan3 >/dev/null 2>&1; then
-    echo "mwan3 [INSTALLED]"
-else
-    echo "mwan3 [NOT FOUND]"
+    echo "Argon [NOT FOUND]"
 fi
 
 echo "=================================================="

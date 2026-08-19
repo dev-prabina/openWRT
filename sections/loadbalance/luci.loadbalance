@@ -1,4 +1,4 @@
-#!/usr/bin/env ucode
+#!/usr/bin/ucode
 import * as ubus from 'ubus';
 import * as fs from 'fs';
 import * as uci from 'uci';

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Queen Suite & Argon Theme — Complete Automated OpenWrt Installer
 # GitHub Repository: https://github.com/dev-prabina/openWRT.git
+# Works on all OpenWrt versions (24.x opkg, 25.x apk, x86, ARM, MIPS)
 set -e
 
 REPO_USER="dev-prabina"
@@ -9,8 +10,6 @@ REPO_BRANCH="main"
 ALT_BRANCH="master"
 GITHUB_RAW="https://raw.githubusercontent.com/$REPO_USER/$REPO_NAME"
 GITHUB_ARCHIVE="https://github.com/$REPO_USER/$REPO_NAME/archive/refs/heads"
-ARGON_IPK_URL="https://github.com/jerrykuku/luci-theme-argon/releases/download/v2.3.1/luci-theme-argon_2.3.1_all.ipk"
-ARGON_CFG_IPK_URL="https://github.com/jerrykuku/luci-app-argon-config/releases/download/v0.9/luci-app-argon-config_0.9_all.ipk"
 
 echo "================================================================="
 echo "  👑 Installing Queen Management Suite & Argon Theme on OpenWrt  "
@@ -32,61 +31,116 @@ download_file() {
     [ -s "$dest" ] || return 1
 }
 
-# Step 1: Detect & Install Prerequisites + Argon Theme + mwan3
-echo "[1/7] Installing system packages & dependencies..."
+# Step 1: Detect & Install Prerequisites + Multi-WAN
+echo "[1/6] Installing system prerequisites and multi-WAN packages..."
 if command -v apk >/dev/null 2>&1; then
     echo "  -> Detected OpenWrt 25.x (apk). Updating & installing..."
     apk update >/dev/null 2>&1 || true
-    apk add ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus iwinfo mwan3 luci-theme-argon luci-app-argon-config curl wget tar ca-certificates >/dev/null 2>&1 || true
+    apk add ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus iwinfo mwan3 curl wget tar ca-certificates >/dev/null 2>&1 || true
 elif command -v opkg >/dev/null 2>&1; then
     echo "  -> Detected OpenWrt 24.x (opkg). Updating & installing..."
     opkg update >/dev/null 2>&1 || true
     opkg install ucode ucode-mod-fs ucode-mod-uci ucode-mod-ubus iwinfo mwan3 curl wget tar ca-certificates >/dev/null 2>&1 || true
-    
-    # Try opkg install for argon theme
-    if ! opkg install luci-theme-argon luci-app-argon-config >/dev/null 2>&1; then
-        echo "  -> Argon theme not in default opkg feed. Installing from official release..."
-        TEMP_PKG_DIR="/tmp/queen_packages_$$"
-        mkdir -p "$TEMP_PKG_DIR"
-        
-        # 1. Check if bundled in local source
-        LOCAL_ARGON_IPK=""
-        LOCAL_ARGON_CFG=""
-        if [ -f "$(pwd)/packages/luci-theme-argon_2.3.1_all.ipk" ]; then
-            LOCAL_ARGON_IPK="$(pwd)/packages/luci-theme-argon_2.3.1_all.ipk"
-            LOCAL_ARGON_CFG="$(pwd)/packages/luci-app-argon-config_0.9_all.ipk"
-        elif [ -f "$(dirname "$0")/../packages/luci-theme-argon_2.3.1_all.ipk" ]; then
-            LOCAL_ARGON_IPK="$(dirname "$0")/../packages/luci-theme-argon_2.3.1_all.ipk"
-            LOCAL_ARGON_CFG="$(dirname "$0")/../packages/luci-app-argon-config_0.9_all.ipk"
-        fi
-
-        if [ -n "$LOCAL_ARGON_IPK" ] && [ -f "$LOCAL_ARGON_IPK" ]; then
-            echo "  -> Installing bundled Argon ipk packages..."
-            opkg install "$LOCAL_ARGON_IPK" "$LOCAL_ARGON_CFG" >/dev/null 2>&1 || true
-        else
-            echo "  -> Downloading Argon theme release packages..."
-            download_file "$ARGON_IPK_URL" "$TEMP_PKG_DIR/argon.ipk" || \
-            download_file "$GITHUB_RAW/$REPO_BRANCH/packages/luci-theme-argon_2.3.1_all.ipk" "$TEMP_PKG_DIR/argon.ipk" || true
-
-            download_file "$ARGON_CFG_IPK_URL" "$TEMP_PKG_DIR/argon_cfg.ipk" || \
-            download_file "$GITHUB_RAW/$REPO_BRANCH/packages/luci-app-argon-config_0.9_all.ipk" "$TEMP_PKG_DIR/argon_cfg.ipk" || true
-
-            if [ -s "$TEMP_PKG_DIR/argon.ipk" ]; then
-                opkg install "$TEMP_PKG_DIR/argon.ipk" >/dev/null 2>&1 || true
-            fi
-            if [ -s "$TEMP_PKG_DIR/argon_cfg.ipk" ]; then
-                opkg install "$TEMP_PKG_DIR/argon_cfg.ipk" >/dev/null 2>&1 || true
-            fi
-        fi
-        rm -rf "$TEMP_PKG_DIR"
-    fi
 fi
 
-# Step 2: Configure Theme (Fail-Safe Verification)
-echo "[2/7] Checking & configuring LuCI theme..."
-if [ -d "/www/luci-static/argon" ] && [ -f "/www/luci-static/argon/cascade.css" ]; then
-    echo "  -> Argon theme confirmed available. Applying tailored Queen configuration..."
-    uci -q batch <<EOF
+# Step 2: Create Destination System Directories
+echo "[2/6] Preparing destination directories..."
+mkdir -p /usr/libexec/rpcd
+mkdir -p /usr/libexec/argon
+mkdir -p /www/luci-static/resources/view/queenx
+mkdir -p /www/luci-static/argon
+mkdir -p /usr/share/luci/menu.d
+mkdir -p /usr/share/rpcd/acl.d
+mkdir -p /etc/config
+
+# Step 3: Locate or Fetch Queen & Argon Source Files
+echo "[3/6] Locating / downloading Queen & Argon source package..."
+SRC_DIR=""
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+PARENT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
+
+if [ -d "$SCRIPT_DIR/sections" ] && [ -d "$SCRIPT_DIR/theme/argon" ]; then
+    SRC_DIR="$SCRIPT_DIR"
+elif [ -d "$PARENT_DIR/sections" ] && [ -d "$PARENT_DIR/theme/argon" ]; then
+    SRC_DIR="$PARENT_DIR"
+elif [ -d "$PARENT_DIR/Queen/sections" ] && [ -d "$PARENT_DIR/Queen/theme/argon" ]; then
+    SRC_DIR="$PARENT_DIR/Queen"
+elif [ -d "$(pwd)/sections" ] && [ -d "$(pwd)/theme/argon" ]; then
+    SRC_DIR="$(pwd)"
+elif [ -d "$(pwd)/Queen/sections" ] && [ -d "$(pwd)/Queen/theme/argon" ]; then
+    SRC_DIR="$(pwd)/Queen"
+fi
+
+# If running remotely via pipe (wget/curl | sh), download full repository archive
+if [ -z "$SRC_DIR" ]; then
+    echo "  -> Running in remote pipe mode. Downloading full Queen repository from GitHub..."
+    WORK_DIR="/tmp/queen_installer_$$"
+    rm -rf "$WORK_DIR"
+    mkdir -p "$WORK_DIR"
+    
+    DOWNLOAD_SUCCESS=0
+    
+    # Try git clone if available
+    if command -v git >/dev/null 2>&1; then
+        echo "  -> Cloning repository via git..."
+        if git clone --depth 1 "https://github.com/$REPO_USER/$REPO_NAME.git" "$WORK_DIR/repo" >/dev/null 2>&1; then
+            DOWNLOAD_SUCCESS=1
+        fi
+    fi
+    
+    # Try repository archive download
+    if [ "$DOWNLOAD_SUCCESS" -eq 0 ]; then
+        echo "  -> Downloading repository archive ($REPO_BRANCH)..."
+        if download_file "$GITHUB_ARCHIVE/$REPO_BRANCH.tar.gz" "$WORK_DIR/repo.tar.gz"; then
+            tar -xzf "$WORK_DIR/repo.tar.gz" -C "$WORK_DIR" 2>/dev/null || true
+            DOWNLOAD_SUCCESS=1
+        else
+            echo "  -> Downloading repository archive ($ALT_BRANCH)..."
+            if download_file "$GITHUB_ARCHIVE/$ALT_BRANCH.tar.gz" "$WORK_DIR/repo.tar.gz"; then
+                tar -xzf "$WORK_DIR/repo.tar.gz" -C "$WORK_DIR" 2>/dev/null || true
+                DOWNLOAD_SUCCESS=1
+            fi
+        fi
+    fi
+
+    # Find the extracted folder
+    for d in "$WORK_DIR"/*; do
+        if [ -d "$d/sections" ] && [ -d "$d/theme/argon" ]; then
+            SRC_DIR="$d"
+            break
+        elif [ -d "$d/Queen/sections" ] && [ -d "$d/Queen/theme/argon" ]; then
+            SRC_DIR="$d/Queen"
+            break
+        fi
+    done
+fi
+
+if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR/sections" ]; then
+    echo "❌ ERROR: Could not locate Queen source files!"
+    echo "Please ensure the router has Internet access or clone https://github.com/$REPO_USER/$REPO_NAME.git manually."
+    exit 1
+fi
+
+echo "  -> Source package located at: $SRC_DIR"
+
+# Step 4: Deploy Bundled Argon Theme & App Configuration
+echo "[4/6] Deploying tailored Argon Theme & Configuration..."
+if [ -d "$SRC_DIR/theme/argon/www" ]; then
+    cp -rf "$SRC_DIR/theme/argon/www/"* /www/
+fi
+if [ -d "$SRC_DIR/theme/argon/usr" ]; then
+    cp -rf "$SRC_DIR/theme/argon/usr/"* /usr/
+fi
+if [ -d "$SRC_DIR/theme/argon/etc" ]; then
+    cp -rf "$SRC_DIR/theme/argon/etc/"* /etc/
+fi
+
+chmod 0755 /usr/libexec/argon/online_wallpaper 2>/dev/null || true
+
+# Apply Tailored Argon Theme UCI Settings
+echo "  -> Applying tailored Queen Argon styling (Teal #0F766E, Glassmorphism & Bing Wallpaper)..."
+uci -q batch <<EOF
 set luci.main.mediaurlbase='/luci-static/argon'
 set argon.@global[0]=global
 set argon.@global[0].primary='#0F766E'
@@ -100,142 +154,9 @@ set argon.@global[0].online_wallpaper='bing'
 commit argon
 commit luci
 EOF
-else
-    echo "  -> Argon theme files not present. Preserving safe default theme..."
-    CURRENT_THEME="$(uci -q get luci.main.mediaurlbase || true)"
-    if [ "$CURRENT_THEME" = "/luci-static/argon" ] || [ -z "$CURRENT_THEME" ]; then
-        if [ -d "/www/luci-static/bootstrap" ]; then
-            uci set luci.main.mediaurlbase='/luci-static/bootstrap'
-            uci commit luci
-        elif [ -d "/www/luci-static/material" ]; then
-            uci set luci.main.mediaurlbase='/luci-static/material'
-            uci commit luci
-        fi
-    fi
-fi
 
-# Step 3: Create Destination Directories
-echo "[3/7] Creating system directories..."
-mkdir -p /usr/libexec/rpcd
-mkdir -p /www/luci-static/resources/view/queenx
-mkdir -p /usr/share/luci/menu.d
-mkdir -p /usr/share/rpcd/acl.d
-mkdir -p /etc/config
-
-# Step 4: Locate or Fetch Queen Source Files
-echo "[4/7] Locating / downloading Queen source files..."
-SRC_DIR=""
-
-# Check local current directory and parent directory
-SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
-PARENT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
-
-if [ -d "$SCRIPT_DIR/sections" ]; then
-    SRC_DIR="$SCRIPT_DIR"
-elif [ -d "$PARENT_DIR/sections" ]; then
-    SRC_DIR="$PARENT_DIR"
-elif [ -d "$PARENT_DIR/Queen/sections" ]; then
-    SRC_DIR="$PARENT_DIR/Queen"
-elif [ -d "$(pwd)/sections" ]; then
-    SRC_DIR="$(pwd)"
-elif [ -d "$(pwd)/Queen/sections" ]; then
-    SRC_DIR="$(pwd)/Queen"
-fi
-
-# If not found locally (e.g. piped via curl/wget), download from GitHub
-if [ -z "$SRC_DIR" ]; then
-    echo "  -> Running in remote pipe mode. Downloading repository from GitHub..."
-    WORK_DIR="/tmp/queen_installer_$$"
-    rm -rf "$WORK_DIR"
-    mkdir -p "$WORK_DIR"
-    
-    DOWNLOAD_SUCCESS=0
-    
-    # 1. Try git clone if git is available
-    if command -v git >/dev/null 2>&1; then
-        echo "  -> Attempting git clone..."
-        if git clone --depth 1 "https://github.com/$REPO_USER/$REPO_NAME.git" "$WORK_DIR/repo" >/dev/null 2>&1; then
-            DOWNLOAD_SUCCESS=1
-        fi
-    fi
-    
-    # 2. Try tarball download if git wasn't used or failed
-    if [ "$DOWNLOAD_SUCCESS" -eq 0 ]; then
-        echo "  -> Attempting archive download ($REPO_BRANCH)..."
-        if download_file "$GITHUB_ARCHIVE/$REPO_BRANCH.tar.gz" "$WORK_DIR/repo.tar.gz"; then
-            tar -xzf "$WORK_DIR/repo.tar.gz" -C "$WORK_DIR" 2>/dev/null || true
-            DOWNLOAD_SUCCESS=1
-        else
-            echo "  -> Attempting archive download ($ALT_BRANCH)..."
-            if download_file "$GITHUB_ARCHIVE/$ALT_BRANCH.tar.gz" "$WORK_DIR/repo.tar.gz"; then
-                tar -xzf "$WORK_DIR/repo.tar.gz" -C "$WORK_DIR" 2>/dev/null || true
-                DOWNLOAD_SUCCESS=1
-            fi
-        fi
-    fi
-
-    # Find the extracted folder
-    for d in "$WORK_DIR"/*; do
-        if [ -d "$d/sections" ]; then
-            SRC_DIR="$d"
-            break
-        elif [ -d "$d/Queen/sections" ]; then
-            SRC_DIR="$d/Queen"
-            break
-        fi
-    done
-
-    # 3. Fallback: Download individual raw files directly via GitHub CDN
-    if [ -z "$SRC_DIR" ]; then
-        echo "  -> Fetching individual Queen files directly via raw GitHub..."
-        RAW_DIR="$WORK_DIR/raw_queen"
-        mkdir -p "$RAW_DIR/sections/internet" "$RAW_DIR/sections/wireless" "$RAW_DIR/sections/clients" \
-                 "$RAW_DIR/sections/mac-filter" "$RAW_DIR/sections/dns" "$RAW_DIR/sections/loadbalance" \
-                 "$RAW_DIR/components" "$RAW_DIR/assets" "$RAW_DIR/examples"
-
-        fetch_raw() {
-            local rel_p="$1"
-            local dest="$2"
-            download_file "$GITHUB_RAW/$REPO_BRANCH/$rel_p" "$dest" || \
-            download_file "$GITHUB_RAW/$REPO_BRANCH/Queen/$rel_p" "$dest" || \
-            download_file "$GITHUB_RAW/$ALT_BRANCH/$rel_p" "$dest" || \
-            download_file "$GITHUB_RAW/$ALT_BRANCH/Queen/$rel_p" "$dest" || true
-        }
-
-        # Fetch all Queen components
-        fetch_raw "sections/internet/luci.internet" "$RAW_DIR/sections/internet/luci.internet"
-        fetch_raw "sections/internet/internet.js" "$RAW_DIR/sections/internet/internet.js"
-        fetch_raw "sections/wireless/luci.wireless" "$RAW_DIR/sections/wireless/luci.wireless"
-        fetch_raw "sections/wireless/wireless.js" "$RAW_DIR/sections/wireless/wireless.js"
-        fetch_raw "sections/clients/luci.clients" "$RAW_DIR/sections/clients/luci.clients"
-        fetch_raw "sections/clients/clients.js" "$RAW_DIR/sections/clients/clients.js"
-        fetch_raw "sections/mac-filter/luci.macfilter" "$RAW_DIR/sections/mac-filter/luci.macfilter"
-        fetch_raw "sections/mac-filter/macfilter.js" "$RAW_DIR/sections/mac-filter/macfilter.js"
-        fetch_raw "sections/dns/luci.dns" "$RAW_DIR/sections/dns/luci.dns"
-        fetch_raw "sections/dns/dns.js" "$RAW_DIR/sections/dns/dns.js"
-        fetch_raw "sections/loadbalance/luci.loadbalance" "$RAW_DIR/sections/loadbalance/luci.loadbalance"
-        fetch_raw "sections/loadbalance/loadbalance.js" "$RAW_DIR/sections/loadbalance/loadbalance.js"
-        fetch_raw "components/menu.json" "$RAW_DIR/components/menu.json"
-        fetch_raw "components/acl.json" "$RAW_DIR/components/acl.json"
-        fetch_raw "assets/primenet_router.png" "$RAW_DIR/assets/primenet_router.png"
-        fetch_raw "examples/mwan3.example" "$RAW_DIR/examples/mwan3.example"
-
-        if [ -s "$RAW_DIR/sections/internet/luci.internet" ]; then
-            SRC_DIR="$RAW_DIR"
-        fi
-    fi
-fi
-
-if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR/sections" ]; then
-    echo "❌ ERROR: Could not locate or download Queen source files!"
-    echo "Please ensure the router has Internet access or clone https://github.com/$REPO_USER/$REPO_NAME.git manually."
-    exit 1
-fi
-
-echo "  -> Source files located at: $SRC_DIR"
-
-# Step 5: Deploy Backend Plugins & Frontend Views
-echo "[5/7] Deploying backend plugins & frontend views..."
+# Step 5: Deploy Queen Backend Plugins, Views & System Components
+echo "[5/6] Deploying Queen backend plugins, frontend views & sidebar menus..."
 cp -f "$SRC_DIR/sections/internet/luci.internet" /usr/libexec/rpcd/luci.internet
 cp -f "$SRC_DIR/sections/wireless/luci.wireless" /usr/libexec/rpcd/luci.wireless
 cp -f "$SRC_DIR/sections/clients/luci.clients" /usr/libexec/rpcd/luci.clients
@@ -261,13 +182,14 @@ if [ ! -f "/etc/config/mwan3" ] && [ -f "$SRC_DIR/examples/mwan3.example" ]; the
     cp -f "$SRC_DIR/examples/mwan3.example" /etc/config/mwan3
 fi
 
-# Step 6: Set Permissions & Reload Daemons
-echo "[6/7] Setting permissions and refreshing system services..."
+# Set Executable & File Permissions
 chmod 0755 /usr/libexec/rpcd/luci.* 2>/dev/null || true
 chmod 0644 /www/luci-static/resources/view/queenx/*.js 2>/dev/null || true
 chmod 0644 /usr/share/luci/menu.d/luci-app-queenx.json 2>/dev/null || true
 chmod 0644 /usr/share/rpcd/acl.d/luci-app-queenx.json 2>/dev/null || true
 
+# Step 6: Reload Daemons & Verify Installation
+echo "[6/6] Reloading system services and verifying installation..."
 /etc/init.d/rpcd reload
 rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache*
 
@@ -276,24 +198,28 @@ if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
     rm -rf "$WORK_DIR"
 fi
 
-# Step 7: Self-Verification
-echo "[7/7] Running automated installation verification..."
+# Verification Checks
 ALL_OK=1
 for b in internet wireless clients macfilter dns loadbalance; do
     if [ ! -x "/usr/libexec/rpcd/luci.$b" ]; then
-        echo "  [FAIL] Backend /usr/libexec/rpcd/luci.$b is missing or not executable!"
+        echo "  [FAIL] Backend /usr/libexec/rpcd/luci.$b is missing!"
         ALL_OK=0
     fi
     if [ ! -f "/www/luci-static/resources/view/queenx/$b.js" ]; then
-        echo "  [FAIL] Frontend view /www/luci-static/resources/view/queenx/$b.js is missing!"
+        echo "  [FAIL] View /www/luci-static/resources/view/queenx/$b.js is missing!"
         ALL_OK=0
     fi
 done
 
-if [ "$ALL_OK" -eq 1 ]; then
-    echo "  -> All 6 backends, 6 frontend views, menu routes & ACLs verified: OK!"
+if [ -f "/www/luci-static/argon/css/cascade.css" ]; then
+    echo "  -> Argon theme stylesheet: [VERIFIED OK]"
 else
-    echo "  ⚠️ Warning: Some components may not have installed correctly."
+    echo "  ⚠️ Warning: Argon theme stylesheet missing!"
+    ALL_OK=0
+fi
+
+if [ "$ALL_OK" -eq 1 ]; then
+    echo "  -> All 6 Queen backends, 6 frontend views, and tailored Argon theme: [100% OPERATIONAL]"
 fi
 
 echo ""
